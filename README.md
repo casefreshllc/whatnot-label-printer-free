@@ -194,3 +194,12 @@ To build the installers yourself: `build.ps1` (Windows, needs Nuitka and Inno Se
 | `updater.py` | Check for updates |
 | `diagnostics.py` | Save diagnostics |
 | `paths.py`, `platform_ui.py`, `theme.py` | Where files go, Windows/Mac differences, light and dark mode |
+
+---
+
+## License
+
+Free for anyone to use, including in your own Whatnot business, and to copy, change and
+share. The one thing you can't do is **sell it**: you may not charge for HammerSlip, or for a
+product or service whose value comes mainly from it. See [LICENSE](LICENSE)
+(MIT with the Commons Clause).
