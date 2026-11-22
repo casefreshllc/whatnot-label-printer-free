@@ -54,6 +54,7 @@ mkdir -p dist dmg-stage
 cp -R "$APP" dmg-stage/
 ln -s /Applications dmg-stage/Applications
 cp README.md "dmg-stage/README.txt"
+cp LICENSE "dmg-stage/LICENSE.txt"
 hdiutil create -volname "$APP_NAME" -srcfolder dmg-stage -ov -format UDZO \
   "dist/HammerSlip-$VERSION-mac$SUFFIX.dmg"
 rm -rf dmg-stage
