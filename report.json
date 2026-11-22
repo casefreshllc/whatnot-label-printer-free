@@ -1,0 +1,47 @@
+{
+  "platform": "macOS-15.8.2-arm64-arm-64bit",
+  "tk": "8.6.16",
+  "theme_light": "aqua",
+  "label_font_bold": "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+  "label_font_regular": "/System/Library/Fonts/Supplemental/Arial.ttf",
+  "printers": [
+    "Test_QL_810W"
+  ],
+  "printer_lookup_seconds": 0.09,
+  "label_pdf_bytes": 2447,
+  "data_dir": "/Users/runner/Documents/HammerSlip",
+  "giveaway_choices": [
+    "Always Print",
+    "Never Print",
+    "Only if first label"
+  ],
+  "selected_printer": "Test_QL_810W",
+  "window_shown": true,
+  "window_size": "1000x600",
+  "start_button": {
+    "kind": "Label",
+    "bg": "#2e7d32",
+    "fg": "white"
+  },
+  "theme_dark": "clam",
+  "settings_window_options": [
+    "APOptionalDuplexer",
+    "Duplex",
+    "ManualFeed"
+  ],
+  "sales_rows": [
+    [
+      "nbaumamn808",
+      "printed"
+    ],
+    [
+      "tidepodsgud",
+      "printed"
+    ],
+    [
+      "test_buyer123",
+      "printed"
+    ]
+  ],
+  "printing_log": "2026-11-22 09:26:35  page 27.9x61.0mm, label image 271x696 (turned 90\u00b0); lp -d Test_QL_810W -t HammerSlip - test_buyer123 -o media=Custom.1.1x2.4in -o fit-to-page /var/folders/9d/l02zfgrs7c16twd3wbpdmhkc0000gn/T/wnlp_label_cnybv694.pdf  ->  exit 0  request id is Test_QL_810W-1 (1 file(s)) \n"
+}

@@ -1,0 +1,1 @@
+2026-11-22 09:26:40.977 app[4172:15017] Failed to read appearance name; try calling update idletasks before getting/setting the appearance of the window.
