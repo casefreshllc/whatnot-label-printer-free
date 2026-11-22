@@ -1,0 +1,330 @@
+name: Build app
+
+# Builds the Windows installer and the Mac app on GitHub's machines.
+#
+#  - main branch: both are built and tested, and only if BOTH succeed are they published
+#    together on this repository's Releases page as "v<VERSION>" (VERSION comes from
+#    paths.py), with latest.json, which is where the app's "Check for updates" looks.
+#  - Other branches: a TEST Windows installer is built and attached to that run's page under
+#    "Artifacts". The Mac version is also built for branches with "mac" in their name, or
+#    when started by hand with "Build the Mac version too" ticked.
+on:
+  push:
+    branches: ["**", "!ci-selftest"]
+  workflow_dispatch:
+    inputs:
+      build_mac:
+        description: "Build the Mac version too"
+        type: boolean
+        default: false
+
+# If a branch gets several pushes in a row, only build the newest one.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  # Test builds get "-TEST-<branch>" in the file name so they're easy to tell apart.
+  INSTALLER_SUFFIX: ${{ github.ref != 'refs/heads/main' && format('-TEST-{0}', github.ref_name) || '' }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.number }}
+    env:
+      NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Reuse compiler cache from earlier builds
+        uses: actions/cache@v4
+        with:
+          path: .nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          restore-keys: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt nuitka
+
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Read version
+        id: version
+        run: |
+          $v = (python -c "import paths; print(paths.VERSION)").Trim()
+          "number=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build app and installer
+        run: powershell -ExecutionPolicy Bypass -File build.ps1
+
+      # Install it, run the app's own self-test, then uninstall and check nothing is left.
+      - name: Self-test install and uninstall
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          try {
+            $setup = (Get-ChildItem dist\*.exe | Select-Object -First 1).FullName
+            $exe = "$env:LOCALAPPDATA\Programs\HammerSlip\HammerSlip.exe"
+            $docs = [Environment]::GetFolderPath("MyDocuments") + "\HammerSlip"
+            # Wait for the installer itself only.
+            function Run-Setup($file, $arguments) { $p = [Diagnostics.Process]::Start($file, $arguments); if (-not $p.WaitForExit(180000)) { throw "$file didn't finish" }; return $p.ExitCode }
+            function Wait-App { for ($i = 0; $i -lt 40; $i++) { $p = Get-Process "HammerSlip" -ErrorAction SilentlyContinue; if ($p) { return $p }; Start-Sleep 1 }; return $null }
+            # Installed the way "Check for updates" does it (silently): the app should start.
+            $code = Run-Setup $setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS"
+            Write-Host "Installer exit code $code"
+            if (-not (Test-Path $exe)) { throw "app not installed" }
+            $first = Wait-App
+            if (-not $first) { throw "app didn't start after the silent install" }
+            Start-Sleep 5
+            '{"dark_mode": true, "upgrade_test": "kept"}' | Set-Content "$docs\config.json"
+            # An update installed over the running app: it should close, update and reopen.
+            $code = Run-Setup $setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS"
+            Start-Sleep 3
+            $second = Wait-App
+            if (-not $second) { throw "app didn't reopen after updating over itself (exit $code)" }
+            if ($second.Id -eq $first.Id) { throw "the running app wasn't replaced (same pid)" }
+            if ((Get-Content "$docs\config.json" -Raw) -notmatch '"upgrade_test": "kept"') { throw "settings weren't kept by the update" }
+            Write-Host "Updated over the running app, reopened and kept settings"
+            Stop-Process -Name "HammerSlip" -Force
+            Start-Sleep 2
+            # The app's own self-test (quits by itself).
+            $report = "$env:RUNNER_TEMP\selftest.json"
+            $env:WNLP_SELF_TEST = $report
+            $st = Start-Process $exe -PassThru
+            if (-not $st.WaitForExit(90000)) { Stop-Process -Id $st.Id -Force; throw "app self-test didn't finish" }
+            Remove-Item Env:WNLP_SELF_TEST
+            if (-not (Test-Path $report)) { throw "app self-test wrote no report" }
+            $r = Get-Content $report -Raw | ConvertFrom-Json
+            if ($r.error) { throw "app self-test error: $($r.error)" }
+            if ($r.data_dir -ne $docs) { throw "data folder is $($r.data_dir), expected $docs" }
+            if (($r.giveaway_choices -join "|") -ne "Always Print|Never Print|Only if first label") { throw "Giveaways dropdown: $($r.giveaway_choices)" }
+            Write-Host "App self-test passed (data folder $($r.data_dir))"
+            # A saved Whatnot token lives outside Documents; the uninstaller must remove it too.
+            New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\HammerSlip" | Out-Null
+            '{"token": "test"}' | Set-Content "$env:LOCALAPPDATA\HammerSlip\whatnot.json"
+            $unins = Get-ChildItem "$env:LOCALAPPDATA\Programs\HammerSlip\unins*.exe" | Select-Object -First 1
+            $code = Run-Setup $unins.FullName "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+            Write-Host "Uninstaller exit code $code"
+            for ($i = 0; $i -lt 30 -and ((Test-Path $exe) -or (Test-Path $docs)); $i++) { Start-Sleep 1 }
+            if (Test-Path $exe) { throw "uninstall left the app behind" }
+            if (Test-Path $docs) { throw "uninstall left Documents\HammerSlip behind" }
+            if (Test-Path "$env:LOCALAPPDATA\HammerSlip") { throw "uninstall left the saved Whatnot token behind" }
+            Write-Host "::notice title=windows-install-selftest::silent install, update over the running app (reopened, settings kept), app self-test (own folders, Giveaways dropdown) and full uninstall (including the saved Whatnot token) all passed"
+          } catch {
+            Write-Host "::error title=windows-install-selftest::$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))"
+            exit 1
+          }
+
+      - name: Save installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: HammerSlip-Setup${{ env.INSTALLER_SUFFIX }}
+          path: dist/*.exe
+          if-no-files-found: error
+
+  mac:
+    if: github.ref == 'refs/heads/main' || contains(github.ref_name, 'mac') || inputs.build_mac
+    runs-on: macos-15          # Apple Silicon (arm64)
+    timeout-minutes: 60
+    env:
+      NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Reuse compiler cache from earlier builds
+        uses: actions/cache@v4
+        with:
+          path: .nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          restore-keys: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt nuitka
+
+      - name: Build app and .dmg
+        run: bash build_mac.sh
+
+      - name: Add a stand-in printer for the self-test (never prints)
+        run: |
+          PPD="$(find /System/Library/Frameworks/ApplicationServices.framework -name Generic.ppd 2>/dev/null | head -1)"
+          echo "Using $PPD"
+          sudo lpadmin -p Test_QL_810W -E -v lpd://127.0.0.1/none -P "$PPD" || echo "could not add test printer"
+          lpstat -p || true
+          lpoptions -p Test_QL_810W -l | head -20 || true
+
+      - name: Self-test the built app (launch it, screenshots, report)
+        run: |
+          mkdir -p selftest
+          APP="build/HammerSlip.app"
+          APP_BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          echo "Launching $APP_BIN"
+          WNLP_SELF_TEST="$PWD/selftest/report.json" "$APP_BIN" > selftest/app_output.txt 2>&1 &
+          APP_PID=$!
+          sleep 6;  screencapture -x selftest/1_light_mode.png || echo "screenshot failed"
+          sleep 6;  screencapture -x selftest/2_dark_mode.png  || echo "screenshot failed"
+          # Any macOS permission prompt (e.g. "find devices on local networks") is its own window.
+          osascript -e 'tell application "System Events" to get name of every process whose visible is true' \
+            > selftest/visible_processes.txt 2>&1 || true
+          for i in $(seq 1 60); do kill -0 $APP_PID 2>/dev/null || break; sleep 1; done
+          kill $APP_PID 2>/dev/null || true
+          cp "$HOME/Documents/HammerSlip/selftest_label.png" selftest/ 2>/dev/null || true
+          echo "--- app output ---"; cat selftest/app_output.txt || true
+          echo "--- report ---"; cat selftest/report.json || true
+          python - <<'EOF'
+          import json, os, sys
+          def note(title, text):
+              text = (text or "(empty)")[-6000:].replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+              print(f"::notice title={title}::{text}")
+          note("mac-app-output", open("selftest/app_output.txt").read() if os.path.exists("selftest/app_output.txt") else "")
+          if not os.path.exists("selftest/report.json"):
+              print("::error title=mac-selftest::The app did not write its self-test report (it may have crashed on start)")
+              sys.exit(1)
+          note("mac-selftest-report", open("selftest/report.json").read())
+          r = json.load(open("selftest/report.json"))
+          problems = []
+          if r.get("error"): problems.append("error inside the app:\n" + r["error"])
+          if not r.get("label_font_bold") or "Arial" not in r["label_font_bold"]:
+              problems.append("label font not found: %r" % r.get("label_font_bold"))
+          if not r.get("label_pdf_bytes"): problems.append("label PDF was not created")
+          if r.get("giveaway_choices") != ["Always Print", "Never Print", "Only if first label"]: problems.append("Giveaways dropdown: %r" % r.get("giveaway_choices"))
+          if r.get("theme_light") != "aqua": problems.append("light mode theme is %r, expected aqua" % r.get("theme_light"))
+          if r.get("printer_lookup_seconds", 0) > 3: problems.append("looking up printers took %ss" % r["printer_lookup_seconds"])
+          if not r.get("window_shown"): problems.append("app window was not shown")
+          if r.get("settings_window_error"): problems.append("Printer Settings window failed:\n" + r["settings_window_error"])
+          if r.get("selected_printer") and "lp -d" not in (r.get("printing_log") or ""):
+              problems.append("test print did not reach the Mac print system: %r / %r" % (r.get("printing_log"), r.get("sales_rows")))
+          if r.get("start_button", {}).get("bg", "").lower() != "#2e7d32": problems.append("start button isn't green: %r" % r.get("start_button"))
+          if not str(r.get("data_dir", "")).endswith("/Documents/HammerSlip"): problems.append("data folder: %r" % r.get("data_dir"))
+          if problems:
+              print("\n".join(problems)); sys.exit(1)
+          print("Self-test passed")
+          EOF
+
+      # The in-app updater's Mac step: replace an installed copy of the app with the one in
+      # a .dmg and reopen it. Uses a copy in a temporary "Applications" folder.
+      - name: Self-test the Mac updater
+        timeout-minutes: 5
+        run: |
+          set -e
+          APP_NAME="HammerSlip"
+          T="$RUNNER_TEMP/updtest"; rm -rf "$T"; mkdir -p "$T/Applications" "$T/new"
+          OLD_APP="$T/Applications/$APP_NAME.app"
+          ditto "build/$APP_NAME.app" "$OLD_APP"
+          ditto "build/$APP_NAME.app" "$T/new/$APP_NAME.app"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 9.9.9" "$T/new/$APP_NAME.app/Contents/Info.plist"
+          codesign --force --deep -s - "$T/new/$APP_NAME.app"
+          hdiutil create -quiet -volname "Update" -srcfolder "$T/new" -ov -format UDZO "$T/update.dmg"
+          python -c "import updater; open('$T/install_update.sh','w').write(updater.MAC_SCRIPT)"
+          sleep 30 & OLDPID=$!
+          ( sleep 3; kill $OLDPID ) &
+          bash "$T/install_update.sh" "$OLDPID" "$OLD_APP" "$T/update.dmg"
+          V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$T/Applications/$APP_NAME.app/Contents/Info.plist")
+          sleep 8
+          pkill -f "$T/Applications/$APP_NAME.app" || true
+          [ "$V" = "9.9.9" ] || { echo "::error title=mac-updater::app wasn't replaced (version $V)"; exit 1; }
+          [ ! -e "$OLD_APP.updating-old" ] || { echo "::error title=mac-updater::old copy left behind"; exit 1; }
+          [ ! -e "$T/update.dmg" ] || { echo "::error title=mac-updater::downloaded .dmg not cleaned up"; exit 1; }
+          echo "::notice title=mac-updater-selftest::waited for the app to quit, replaced $APP_NAME.app from the .dmg (now $V), cleaned up and reopened it"
+
+      - name: Share self-test screenshots on the ci-selftest branch
+        if: always()
+        run: |
+          [ -d selftest ] || exit 0
+          rm -rf /tmp/res && mkdir -p /tmp/res && cp -R selftest/. /tmp/res/
+          cd /tmp/res
+          git init -q -b ci-selftest
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -q --allow-empty -m "Mac self-test for ${GITHUB_SHA} (${GITHUB_REF_NAME})" || true
+          git add -A
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -q --amend -m "Mac self-test for ${GITHUB_SHA} (${GITHUB_REF_NAME})"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ci-selftest
+
+      - name: Save self-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-selftest${{ env.INSTALLER_SUFFIX }}
+          path: selftest/
+          if-no-files-found: ignore
+
+      - name: Save .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: HammerSlip-mac${{ env.INSTALLER_SUFFIX }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    # Only for main, and only when BOTH the Windows and Mac builds succeeded.
+    if: github.ref == 'refs/heads/main'
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.windows.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      # The app's "Check for updates" reads latest.json from this repository's newest
+      # release: the version, and where to get each installer plus its SHA-256 fingerprint
+      # (the app refuses a download that doesn't match).
+      - name: Describe this release for the in-app updater
+        run: |
+          python3 - <<'EOF'
+          import hashlib, json, os, glob
+          v, repo = os.environ["VERSION"], os.environ["GITHUB_REPOSITORY"]
+          base = f"https://github.com/{repo}/releases/download/v{v}"
+          def asset(pattern):
+              path = glob.glob(pattern)[0]
+              digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+              return {"url": f"{base}/{os.path.basename(path)}", "sha256": digest}
+          info = {"version": v,
+                  "notes_url": f"https://github.com/{repo}/releases/tag/v{v}",
+                  "windows": asset("out/*.exe"),
+                  "mac": asset("out/*.dmg")}
+          json.dump(info, open("out/latest.json", "w"), indent=2)
+          print(json.dumps(info, indent=2))
+          EOF
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: HammerSlip ${{ env.VERSION }}
+          body: |
+            **Windows:** download **HammerSlip-Setup-${{ env.VERSION }}.exe** and run it.
+            **Mac (Apple Silicon):** download **HammerSlip-${{ env.VERSION }}-mac.dmg**, open it and drag the app into Applications.
+
+            Already installed? Click **Check for updates** in the app instead.
+          files: |
+            out/*.exe
+            out/*.dmg
+            out/latest.json
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          make_latest: true

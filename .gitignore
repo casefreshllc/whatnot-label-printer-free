@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build output
+build/
+dist/
+.nuitka-cache/
+
+# Files the app creates while running (when run from source)
+sales_log.csv
+sales_log_*.csv
+Sales Logs/
+printed_labels/
+capture_log.txt
