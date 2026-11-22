@@ -158,45 +158,6 @@ you don't want to keep your settings and logs.
 
 ---
 
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| **Whatnot** line is red | Click **Whatnot API…** and **Test connection**. If the token was deleted or mistyped, create a new one and paste it in. |
-| Sales list shows **⚠ no buyer name** | Your token can't read customers. Create a token with read access to customers. |
-| Line says it's waiting for the show to go live, but you're live | It checks every 20 seconds; give it a moment. |
-| "No printers found" | Add the printer to your computer, then click **Refresh** in the app. |
-| Labels are the wrong size, cut off or sideways | Check **Printer Settings…** (label size and orientation). On Windows, also see the tip under [Set up your printer](#set-up-your-printer). |
-| Labels come out upside down | Tick **Flip upside down** in Printer Settings. |
-| A sale was missed while the app was closed | Use **Print a name…** to print it. |
-| "Already running" message | The app is already open in another window. |
-
----
-
-## Building it yourself
-
-HammerSlip is written in Python (Tkinter for the window, Pillow to draw labels). Every push
-to `main` is built and tested on GitHub's Windows and Mac machines and, if both pass,
-published on the Releases page (see `.github/workflows/build.yml`).
-
-To run it from source: `pip install -r requirements.txt`, then `python app.py`.
-To build the installers yourself: `build.ps1` (Windows, needs Nuitka and Inno Setup 6) or
-`build_mac.sh` (Apple Silicon Mac, needs Nuitka).
-
-| File | What it does |
-|---|---|
-| `app.py` | The main window, label rules and printing queue |
-| `whatnot_api.py` | Gets new orders from Whatnot and waits for each payment to go through |
-| `whatnot_ui.py` | The Whatnot API… window (your access token) |
-| `rules.py` | Who gets a label (Print Every Sale, Giveaways) |
-| `label.py`, `labelsizes.py` | Drawing labels and the label sizes on offer |
-| `printer.py`, `printer_settings.py` | Sending labels to the printer, Printer Settings window |
-| `updater.py` | Check for updates |
-| `diagnostics.py` | Save diagnostics |
-| `paths.py`, `platform_ui.py`, `theme.py` | Where files go, Windows/Mac differences, light and dark mode |
-
----
-
 ## License
 
 Free for anyone to use, including in your own Whatnot business, and to copy, change and
