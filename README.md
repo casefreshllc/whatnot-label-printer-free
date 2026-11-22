@@ -1,8 +1,5 @@
 # HammerSlip
 
-Free. No account, no sign-in, no subscription. It only contacts Whatnot, and GitHub to
-check for updates.
-
 Automatically prints a label with the buyer's username every time something sells in your
 Whatnot live show.
 
